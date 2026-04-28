@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 import os
 import json
+import glob
+import re
 import cv2
 import rospy
 import tf
 import numpy as np
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
+from charuco_board import board_metadata, estimate_charuco_pose
+
 
 class SampleCapture:
     def __init__(self):
@@ -22,6 +26,7 @@ class SampleCapture:
 
         self.output_dir = os.path.expanduser("~/handeye_samples")
         os.makedirs(self.output_dir, exist_ok=True)
+        self.sample_idx = self.next_sample_idx()
 
         self.K = np.array([
             [366.14324951171875, 0.0, 322.98895263671875],
@@ -31,60 +36,32 @@ class SampleCapture:
 
         self.D = np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
-        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict)
+    def next_sample_idx(self):
+        indices = []
+        for path in glob.glob(os.path.join(self.output_dir, "sample_*.json")):
+            match = re.search(r"sample_(\d+)\.json$", os.path.basename(path))
+            if match:
+                indices.append(int(match.group(1)))
 
-        self.square_len = 0.02
-        self.marker_len = 0.015
-        self.margin = (self.square_len - self.marker_len) / 2.0
+        if not indices:
+            return 0
+
+        return max(indices) + 1
 
     def image_cb(self, msg):
         self.latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
-    def marker_id_to_object_points(self, marker_id):
-        marker_col_from_right = marker_id % 7
-        marker_row_from_bottom = marker_id // 7
-
-        col = 8 - (2 * marker_col_from_right)
-        row = 13 - (2 * marker_row_from_bottom)
-
-        x0 = col * self.square_len + self.margin
-        y0 = row * self.square_len + self.margin
-
-        return np.array([
-            [x0,                   y0,                    0.0],
-            [x0 + self.marker_len, y0,                    0.0],
-            [x0 + self.marker_len, y0 + self.marker_len,  0.0],
-            [x0,                   y0 + self.marker_len,  0.0],
-        ], dtype=np.float32)
-
     def estimate_board_pose(self, image):
-        corners, ids, _ = self.detector.detectMarkers(image)
-        if ids is None:
-            return None
-
-        ids = ids.flatten()
-        obj_points = []
-        img_points = []
-
-        for marker_corners, marker_id in zip(corners, ids):
-            obj_points.append(self.marker_id_to_object_points(int(marker_id)))
-            img_points.append(marker_corners[0].astype(np.float32))
-
-        obj_points = np.concatenate(obj_points, axis=0)
-        img_points = np.concatenate(img_points, axis=0)
-
-        if len(ids) < 6:
-            return None
-
-        ok, rvec, tvec = cv2.solvePnP(obj_points, img_points, self.K, self.D)
-        if not ok:
+        detection = estimate_charuco_pose(image, self.K, self.D)
+        if detection is None:
             return None
 
         return {
-            "num_markers": int(len(ids)),
-            "rvec": rvec.flatten().tolist(),
-            "tvec": tvec.flatten().tolist(),
+            "num_markers": int(len(detection["marker_ids"])),
+            "num_charuco_corners": int(len(detection["charuco_ids"])),
+            "reprojection_error_px": detection["reprojection_error_px"],
+            "rvec": detection["rvec"].flatten().tolist(),
+            "tvec": detection["tvec"].flatten().tolist(),
         }
 
     def get_tool_pose(self):
@@ -105,6 +82,26 @@ class SampleCapture:
                 continue
 
             view = self.latest_image.copy()
+            detection = estimate_charuco_pose(view, self.K, self.D)
+            if detection is not None:
+                cv2.aruco.drawDetectedMarkers(
+                    view,
+                    detection["marker_corners"],
+                    detection["marker_ids"],
+                )
+                cv2.aruco.drawDetectedCornersCharuco(
+                    view,
+                    detection["charuco_corners"],
+                    detection["charuco_ids"],
+                )
+                cv2.drawFrameAxes(
+                    view,
+                    self.K,
+                    self.D,
+                    detection["rvec"],
+                    detection["tvec"],
+                    0.05,
+                )
             cv2.imshow("handeye_capture", view)
             key = cv2.waitKey(1) & 0xFF
 
@@ -132,6 +129,9 @@ class SampleCapture:
 
                 data = {
                     "image_file": image_name,
+                    "board_model": board_metadata(),
+                    "camera_frame": "zedm_left_camera_optical_frame",
+                    "tool_frame": "tool0",
                     "tool_pose": tool_pose,
                     "board_pose": board_pose,
                 }
@@ -140,6 +140,12 @@ class SampleCapture:
                     json.dump(data, f, indent=2)
 
                 print(f"Saved sample {self.sample_idx:03d} with {board_pose['num_markers']} markers")
+                print(
+                    "  ChArUco corners: {num_charuco_corners}, reprojection mean: {mean:.2f}px".format(
+                        num_charuco_corners=board_pose["num_charuco_corners"],
+                        mean=board_pose["reprojection_error_px"]["mean"],
+                    )
+                )
                 self.sample_idx += 1
 
         cv2.destroyAllWindows()

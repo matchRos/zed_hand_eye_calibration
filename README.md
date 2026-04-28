@@ -5,7 +5,7 @@ This repository contains scripts for calibrating the transformation between a ZE
 The goal is to estimate:
 
 ```text
-tool0 -> camera
+tool0 -> zedm_left_camera_optical_frame
 ```
 
 ---
@@ -62,20 +62,30 @@ Run the scripts in the following order.
 
 ---
 
-### Step 1: Check ArUco Marker Detection
+### Step 1: Check ChArUco Target Detection
 
 Use this step to verify that the calibration board is visible and that the markers are detected correctly.
 
 ```bash
-python detect_aruco.py
+cd ~/catkin_ws/src/hand_eye_calibration
+~/venvs/handeye/bin/python detect_aruco.py
 ```
 
 Expected result:
 
-- marker IDs are printed in the terminal
-- detected markers are shown in the image window
+- marker IDs, ChArUco corner count, and reprojection error are printed
+- detected markers, ChArUco corners, and target axes are shown in the image window
 
 Continue only if marker detection works reliably.
+
+The configured target is the Calib.io ChArUco 300x200 Coarse board:
+
+```text
+14 columns x 9 rows
+checker size: 20 mm
+marker size: 15 mm
+dictionary: ArUco DICT_5X5_100
+```
 
 ---
 
@@ -84,7 +94,7 @@ Continue only if marker detection works reliably.
 Use this step to verify that the robot pose can be read from TF.
 
 ```bash
-python get_tf.py
+~/venvs/handeye/bin/python get_tf.py
 ```
 
 Expected result:
@@ -103,7 +113,7 @@ Continue only if the transform `base_link -> tool0` is printed correctly.
 Run the sample collection script:
 
 ```bash
-python capture_sample.py
+~/venvs/handeye/bin/python capture_sample.py
 ```
 
 A camera window opens.
@@ -128,6 +138,8 @@ The samples are saved to:
 ```text
 ~/handeye_samples/
 ```
+
+New samples include a `board_model` tag. `compute_handeye.py` ignores older samples without this tag, so pre-fix JSON files from the former custom board model are not mixed into the new calibration.
 
 Each sample consists of:
 
@@ -173,7 +185,7 @@ Avoid:
 After collecting enough samples, run:
 
 ```bash
-python compute_handeye.py
+~/venvs/handeye/bin/python compute_handeye.py
 ```
 
 The script prints the estimated transformation.
@@ -181,17 +193,14 @@ The script prints the estimated transformation.
 Relevant output:
 
 ```text
-translation_gripper2cam:
-[...]
-
-quat_gripper2cam [x, y, z, w]:
-[...]
+static_transform_publisher args:
+X Y Z QX QY QZ QW tool0 zedm_left_camera_optical_frame 100
 ```
 
 This is the desired transformation:
 
 ```text
-tool0 -> camera
+tool0 -> zedm_left_camera_optical_frame
 ```
 
 ---
@@ -201,7 +210,7 @@ tool0 -> camera
 Publish the result as a static transform:
 
 ```bash
-rosrun tf static_transform_publisher X Y Z QX QY QZ QW tool0 zed_camera_frame 100
+rosrun tf static_transform_publisher X Y Z QX QY QZ QW tool0 zedm_left_camera_optical_frame 100
 ```
 
 Replace:
@@ -210,7 +219,7 @@ Replace:
 X Y Z
 ```
 
-with `translation_gripper2cam`.
+with the first three values from `static_transform_publisher args`.
 
 Replace:
 
@@ -218,15 +227,12 @@ Replace:
 QX QY QZ QW
 ```
 
-with `quat_gripper2cam`.
+with the quaternion values from `static_transform_publisher args`.
 
-Example:
+Then replace the `zed_camera_static_tf` args in:
 
-```bash
-rosrun tf static_transform_publisher \
--0.18846434 0.00467202 -0.05067501 \
--0.06574323 0.17529774 -0.17568901 0.96647913 \
-tool0 zed_camera_frame 100
+```text
+usb_c_insertion/launch/launch_ur.launch
 ```
 
 ---
@@ -239,8 +245,8 @@ For each validation pose, compute:
 
 ```text
 base_link -> tool0
-tool0 -> camera
-camera -> board
+tool0 -> zedm_left_camera_optical_frame
+zedm_left_camera_optical_frame -> board
 ```
 
 The resulting board pose in `base_link` should stay approximately constant.
@@ -271,7 +277,7 @@ Expected behavior:
 The final calibration result is:
 
 ```text
-tool0 -> camera
+tool0 -> zedm_left_camera_optical_frame
 ```
 
 This transform can be used as a static TF in ROS.
